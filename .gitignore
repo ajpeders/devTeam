@@ -1,0 +1,6 @@
+/devteam-node
+.venv/
+__pycache__/
+.codex/
+.codex
+*.egg-info/

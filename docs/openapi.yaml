@@ -1,0 +1,1474 @@
+openapi: 3.0.3
+info:
+  title: MyDevTeam API
+  description: |
+    API for the MyDevTeam autonomous agentic development system.
+
+    ## Task Pipeline
+    ```
+    Dev → Review → QA → (human approve) → Deploy
+    ```
+    Each stage auto-creates the next as a child task on completion.
+
+    ## Authentication
+    - Admin endpoints require the admin API key from config (`admin_api_key`).
+    - All user-facing endpoints (`/api/user/*`, `/api/project/*`, `/api/task/*`,
+      `/api/webhook/*`, `/api/deploy/approve`, `/api/agents/*`, `/api/dashboard/*`)
+      require `X-Api-Key` header for a regular user.
+    - Agent-internal endpoints (`/api/task/claim`, `/api/task/status`, `/api/heartbeat`,
+      `/api/git/*`) have no user auth — agents use internal tokens.
+
+    ## Webhooks
+    Register webhook URLs to receive HTTP POST notifications on task events.
+    Supported events: `task.created`, `task.status_changed`, `task.completed`, `task.failed`, `task.approved`.
+    Payloads are signed with `X-Webhook-Signature` (HMAC-SHA256).
+
+    ## Real-time Updates
+    `WS /ws/tasks` — broadcasts task list + stats every 2 seconds.
+  version: 2.3.0
+
+servers:
+  - url: http://localhost:4223
+    description: Local daemon
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+
+  schemas:
+    # ── Auth ──────────────────────────────────
+    UserResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        is_admin:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    CreateUserReq:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+
+    CreateUserResp:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        api_key:
+          type: string
+
+    DeleteUserReq:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+
+    # ── Projects ──────────────────────────────
+    CreateProjectReq:
+      type: object
+      required: [name, repo_url]
+      properties:
+        name:
+          type: string
+        repo_url:
+          type: string
+
+    CreateProjectResp:
+      type: object
+      properties:
+        project_id:
+          type: string
+          format: uuid
+
+    ProjectResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        repo_url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    DeleteProjectReq:
+      type: object
+      required: [project_id]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+
+    # ── Tasks ─────────────────────────────────
+    TaskInput:
+      type: object
+      properties:
+        description:
+          type: string
+        params:
+          type: object
+          additionalProperties:
+            type: string
+
+    TaskResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+        parent_id:
+          type: string
+          format: uuid
+          description: ID of parent task (set for sub-tasks spawned by orchestrator)
+        type:
+          type: string
+          enum: [dev, review, qa, deploy, orchestrator]
+        status:
+          type: string
+          enum: [pending, assigned, in_progress, completed, failed, blocked, cancelled, needs_changes]
+        input:
+          $ref: '#/components/schemas/TaskInput'
+        assigned_to:
+          type: string
+        node_id:
+          type: string
+        priority:
+          type: integer
+          default: 0
+        revision:
+          type: integer
+          default: 0
+          description: Incremented on each edit
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              status:
+                type: string
+              detail:
+                type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateTaskReq:
+      type: object
+      required: [project_id, description]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        description:
+          type: string
+        params:
+          type: object
+          additionalProperties:
+            type: string
+        priority:
+          type: integer
+          default: 0
+          description: Higher priority tasks are claimed first.
+        type:
+          type: string
+          enum: [dev, orchestrator]
+          default: dev
+          description: Task type. Use "orchestrator" to spawn an orchestrator agent that breaks work into sub-tasks.
+
+    CreateTaskResp:
+      type: object
+      properties:
+        task_id:
+          type: string
+          format: uuid
+
+    GetTaskReq:
+      type: object
+      required: [task_id]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+
+    ListTasksReq:
+      type: object
+      properties:
+        project_id:
+          type: string
+          format: uuid
+          description: Filter by project (omit to list all user's tasks)
+        type:
+          type: string
+          enum: [dev, review, qa, deploy, orchestrator]
+        status:
+          type: string
+        node_id:
+          type: string
+        assigned_to:
+          type: string
+
+    CancelTaskReq:
+      type: object
+      required: [task_id]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+
+    RetryTaskReq:
+      type: object
+      required: [task_id]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+
+    SetPriorityReq:
+      type: object
+      required: [task_id, priority]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        priority:
+          type: integer
+
+    DeleteTaskReq:
+      type: object
+      required: [task_id]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+
+    ApproveDeployReq:
+      type: object
+      required: [task_id]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+          description: ID of a completed QA task
+
+    ApproveDeployResp:
+      type: object
+      properties:
+        deploy_task_id:
+          type: string
+          format: uuid
+        message:
+          type: string
+
+    EditTaskReq:
+      type: object
+      required: [task_id]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        description:
+          type: string
+        params:
+          type: object
+          additionalProperties:
+            type: string
+        priority:
+          type: integer
+
+    # ── Dev pool ──────────────────────────────
+    CreateDevSlotReq:
+      type: object
+      properties:
+        model:
+          type: string
+        provider:
+          type: string
+          default: ollama
+        endpoint:
+          type: string
+        working_dir:
+          type: string
+        repo_url:
+          type: string
+
+    UpdateDevSlotReq:
+      type: object
+      properties:
+        model:
+          type: string
+        provider:
+          type: string
+        endpoint:
+          type: string
+        working_dir:
+          type: string
+        repo_url:
+          type: string
+
+    DevSlotResp:
+      type: object
+      properties:
+        id:
+          type: string
+        model:
+          type: string
+        provider:
+          type: string
+        endpoint:
+          type: string
+        working_dir:
+          type: string
+        repo_url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Agent-internal ────────────────────────
+    ClaimTaskReq:
+      type: object
+      required: [agent_id, agent_type]
+      properties:
+        agent_id:
+          type: string
+        agent_type:
+          type: string
+          enum: [dev, review, qa, deploy]
+        project_id:
+          type: string
+          format: uuid
+        node_id:
+          type: string
+
+    ClaimTaskResp:
+      type: object
+      properties:
+        found:
+          type: boolean
+        task:
+          $ref: '#/components/schemas/TaskResp'
+
+    UpdateStatusReq:
+      type: object
+      required: [task_id, status]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [in_progress, completed, failed, blocked]
+        detail:
+          type: string
+        message:
+          type: string
+          description: Alias for detail
+
+    HeartbeatReq:
+      type: object
+      required: [agent_id]
+      properties:
+        agent_id:
+          type: string
+
+    AgentLogsReq:
+      type: object
+      required: [agent_id]
+      properties:
+        agent_id:
+          type: string
+        tail_lines:
+          type: integer
+          default: 100
+
+    # ── Dashboard / Node ──────────────────────
+    DashboardStatsResp:
+      type: object
+      properties:
+        total:
+          type: integer
+        by_type:
+          type: object
+          additionalProperties:
+            type: integer
+        by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        pending:
+          type: integer
+        in_progress:
+          type: integer
+        completed:
+          type: integer
+        failed:
+          type: integer
+
+    NodeInfoResp:
+      type: object
+      properties:
+        node_id:
+          type: string
+        uptime_seconds:
+          type: integer
+        agent_count:
+          type: integer
+        nats_connected:
+          type: boolean
+        api_address:
+          type: string
+
+    OkResp:
+      type: object
+      properties:
+        ok:
+          type: boolean
+
+    ErrorResp:
+      type: object
+      properties:
+        detail:
+          type: string
+
+    # ── Webhooks ──────────────────────────────
+    WebhookResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        url:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+        secret:
+          type: string
+        active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    CreateWebhookReq:
+      type: object
+      required: [project_id, url]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        url:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+          description: Event types to subscribe to. Empty = all events.
+        active:
+          type: boolean
+          default: true
+
+    ListWebhooksResp:
+      type: object
+      properties:
+        webhooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookResp'
+
+    DeleteWebhookReq:
+      type: object
+      required: [webhook_id]
+      properties:
+        webhook_id:
+          type: string
+          format: uuid
+
+  responses:
+    Unauthorized:
+      description: Invalid or missing API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResp'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResp'
+
+paths:
+  # ── User-authenticated ────────────────────
+  /api/user/me:
+    post:
+      summary: Get current user
+      operationId: getMe
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Current user info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Admin ─────────────────────────────────
+  /api/admin/user/create:
+    post:
+      summary: Create a new user (admin only)
+      operationId: adminCreateUser
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserReq'
+      responses:
+        '200':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateUserResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResp'
+
+  /api/admin/user/list:
+    post:
+      summary: List all users (admin only)
+      operationId: adminListUsers
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResp'
+
+  /api/admin/user/delete:
+    post:
+      summary: Delete a user (admin only)
+      operationId: adminDeleteUser
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteUserReq'
+      responses:
+        '200':
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResp'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/project/create:
+    post:
+      summary: Create a project
+      operationId: createProject
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectReq'
+      responses:
+        '200':
+          description: Project created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateProjectResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/project/list:
+    post:
+      summary: List user's projects
+      operationId: listProjects
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: List of projects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/project/delete:
+    post:
+      summary: Delete a project and its tasks
+      operationId: deleteProject
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteProjectReq'
+      responses:
+        '200':
+          description: Project deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/task/create:
+    post:
+      summary: Submit a task to a project
+      description: Creates a dev task. Requires project ownership.
+      operationId: createTask
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskReq'
+      responses:
+        '200':
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTaskResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/task/get:
+    post:
+      summary: Get task details
+      description: Returns a task. Verifies project ownership.
+      operationId: getTask
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetTaskReq'
+      responses:
+        '200':
+          description: Task details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: '#/components/schemas/TaskResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/task/list:
+    post:
+      summary: List tasks
+      description: Lists tasks across user's projects. Optionally filter by project, type, status.
+      operationId: listTasks
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListTasksReq'
+      responses:
+        '200':
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TaskResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/task/cancel:
+    post:
+      summary: Cancel a task
+      operationId: cancelTask
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelTaskReq'
+      responses:
+        '200':
+          description: Task cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/task/retry:
+    post:
+      summary: Retry a failed task
+      description: Moves a failed task back to pending.
+      operationId: retryTask
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryTaskReq'
+      responses:
+        '200':
+          description: Task retried
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+        '400':
+          description: Task is not in failed state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/task/delete:
+    post:
+      summary: Delete a task
+      operationId: deleteTask
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteTaskReq'
+      responses:
+        '200':
+          description: Task deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/task/priority:
+    patch:
+      summary: Update task priority
+      description: Set or adjust a task's priority. Higher = claimed first.
+      operationId: setTaskPriority
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPriorityReq'
+      responses:
+        '200':
+          description: Priority updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: '#/components/schemas/TaskResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/task/edit:
+    patch:
+      summary: Edit a pending task
+      description: Update description, params, or priority. Only allowed on pending/in_progress tasks. Increments revision counter.
+      operationId: editTask
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditTaskReq'
+      responses:
+        '200':
+          description: Task updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: '#/components/schemas/TaskResp'
+        '400':
+          description: Task cannot be edited (already completed/cancelled)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/deploy/approve:
+    post:
+      summary: Approve deployment
+      description: |
+        Approves a completed QA task for deployment.
+        Creates a deploy task in the same project.
+      operationId: approveDeploy
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveDeployReq'
+      responses:
+        '200':
+          description: Deploy task created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApproveDeployResp'
+        '400':
+          description: Task not QA type or not completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/agents/list:
+    post:
+      summary: List running agents
+      operationId: listAgents
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        type:
+                          type: string
+                        status:
+                          type: string
+                          enum: [running, exited, dead]
+                        started_at:
+                          type: string
+                          format: date-time
+                        last_heart:
+                          type: string
+                          format: date-time
+                        restarts:
+                          type: integer
+                        llm_model:
+                          type: string
+                        max_memory_mb:
+                          type: integer
+                        max_cpu_percent:
+                          type: integer
+                        log_path:
+                          type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/agent/config:
+    post:
+      summary: Get the running config for an agent type
+      operationId: getAgentConfig
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [dev, review, qa, deploy]
+      responses:
+        '200':
+          description: Agent config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  max_memory_mb:
+                    type: integer
+                  max_cpu_percent:
+                    type: integer
+                  llm_model:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/agent/logs:
+    post:
+      summary: Get agent log output
+      operationId: getAgentLogs
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentLogsReq'
+      responses:
+        '200':
+          description: Agent log content
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id:
+                    type: string
+                  log:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/dev/create:
+    post:
+      summary: Create a dev slot (admin only)
+      description: Add a new developer slot to the pool with model/provider/endpoint configuration.
+      operationId: createDevSlot
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDevSlotReq'
+      responses:
+        '200':
+          description: Dev slot created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DevSlotResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResp'
+
+  /api/dev/list:
+    get:
+      summary: List dev slots (admin only)
+      operationId: listDevSlots
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Dev slot list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  slots:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DevSlotResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResp'
+
+  /api/dev/{id}:
+    patch:
+      summary: Update a dev slot (admin only)
+      operationId: updateDevSlot
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDevSlotReq'
+      responses:
+        '200':
+          description: Dev slot updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DevSlotResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResp'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete a dev slot (admin only)
+      operationId: deleteDevSlot
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dev slot deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResp'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/dashboard/stats:
+    post:
+      summary: Dashboard statistics
+      description: Task counts by type and status, scoped to the authenticated user's projects.
+      operationId: dashboardStats
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Dashboard stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardStatsResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/node/info:
+    post:
+      summary: Node information
+      operationId: nodeInfo
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Node info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeInfoResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Webhooks ──────────────────────────────
+  /api/webhook/create:
+    post:
+      summary: Register a webhook for a project
+      operationId: createWebhook
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookReq'
+      responses:
+        '200':
+          description: Webhook registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/webhook/list:
+    post:
+      summary: List webhooks for a project
+      operationId: listWebhooks
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Webhook list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListWebhooksResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/webhook/delete:
+    post:
+      summary: Delete a webhook
+      operationId: deleteWebhook
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteWebhookReq'
+      responses:
+        '200':
+          description: Webhook deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Agent-internal (no user auth) ─────────
+  /api/task/claim:
+    post:
+      summary: Agent claims next pending task
+      description: No user auth. Agent provides its type and optional project_id filter.
+      operationId: claimTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimTaskReq'
+      responses:
+        '200':
+          description: Claim result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimTaskResp'
+
+  /api/task/status:
+    post:
+      summary: Agent updates task status
+      description: |
+        No user auth. On completion, triggers pipeline chaining:
+        - Dev completed → Review task created
+        - Review approved → QA task created
+        - Review changes_requested → new Dev task created
+      operationId: updateTaskStatus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStatusReq'
+      responses:
+        '200':
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+
+  /api/heartbeat:
+    post:
+      summary: Agent heartbeat
+      description: No user auth. Agents send heartbeats every 10s.
+      operationId: heartbeat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatReq'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+
+  /api/git/clone:
+    post:
+      summary: Clone repository for task
+      operationId: gitClone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task_id]
+              properties:
+                task_id:
+                  type: string
+                repo_url:
+                  type: string
+      responses:
+        '200':
+          description: Cloned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspace_path:
+                    type: string
+
+  /api/git/branch:
+    post:
+      summary: Create branch
+      operationId: gitBranch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspace_path, branch_name]
+              properties:
+                workspace_path:
+                  type: string
+                branch_name:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+
+  /api/git/commit:
+    post:
+      summary: Commit changes
+      operationId: gitCommit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspace_path, message]
+              properties:
+                workspace_path:
+                  type: string
+                message:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+
+  /api/git/push:
+    post:
+      summary: Push branch
+      operationId: gitPush
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspace_path, branch_name]
+              properties:
+                workspace_path:
+                  type: string
+                branch_name:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResp'
+
+  /ws/tasks:
+    get:
+      summary: WebSocket for real-time task updates
+      description: |
+        Broadcasts full task list + stats every 2 seconds.
+        Client can send `{"type": "subscribe"}` to trigger an immediate update.
+      operationId: wsTasks
+      responses:
+        '101':
+          description: WebSocket connection established

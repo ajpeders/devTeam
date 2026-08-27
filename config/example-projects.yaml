@@ -1,0 +1,82 @@
+# Project-based config — each project gets its own agents and repo.
+# The daemon auto-creates projects in the DB on startup.
+
+cluster:
+  node_id: "local-dev"
+  seeds: []
+
+api:
+  address: "localhost:4223"
+  admin_api_key: "CHANGE-ME-use-a-long-random-string"
+
+projects:
+  - name: backend-api
+    repo_url: "git@github.com:yourorg/backend.git"
+    agents:
+      - type: dev
+        count: 1
+        llm:
+          primary:
+            provider: ollama
+            model: qwen3:8b
+            endpoint: http://localhost:11434
+          timeout: 120s
+      - type: review
+        count: 1
+        llm:
+          primary:
+            provider: ollama
+            model: qwen3:8b
+            endpoint: http://localhost:11434
+          timeout: 120s
+      - type: qa
+        count: 1
+        llm:
+          primary:
+            provider: ollama
+            model: qwen3:8b
+            endpoint: http://localhost:11434
+          timeout: 120s
+      - type: deploy
+        count: 1
+        llm:
+          primary:
+            provider: ollama
+            model: qwen3:8b
+            endpoint: http://localhost:11434
+          timeout: 120s
+
+  - name: frontend-app
+    repo_url: "git@github.com:yourorg/frontend.git"
+    agents:
+      - type: dev
+        count: 1
+        llm:
+          primary:
+            provider: ollama
+            model: qwen3:8b
+            endpoint: http://localhost:11434
+          timeout: 120s
+      - type: qa
+        count: 1
+        llm:
+          primary:
+            provider: ollama
+            model: qwen3:8b
+            endpoint: http://localhost:11434
+          timeout: 120s
+
+git:
+  default_remote: ""
+  workspace_dir: "/tmp/devteam-workspaces"
+
+docker:
+  registry: ""
+
+deploy:
+  method: "docker-compose"
+  targets:
+    - name: "staging"
+      host: "ssh://staging-server"
+      compose_file: "docker-compose.staging.yml"
+  default_target: "staging"

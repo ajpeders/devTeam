@@ -1,0 +1,34 @@
+[project]
+name = "mydevteam-agents"
+version = "0.1.0"
+description = "Python agents for the MyDevTeam distributed system"
+requires-python = ">=3.11"
+dependencies = [
+    "litellm",
+    "grpcio",
+    "grpcio-tools",
+    "nats-py",
+    "gitpython",
+    "httpx",
+    "pytest",
+    "protobuf",
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "pydantic",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# Flat layout with several top-level directories, so auto-discovery bails out
+# ("multiple top-level packages"). Only the importable code is a package —
+# config/, tests/ and web/ are data and scripts, not distributables.
+#
+# The globs matter: an explicit `packages = ["daemon", "agents"]` list does NOT
+# recurse, so a built wheel contains 5 .py files and silently omits daemon/api,
+# daemon/tasks, agents/dev and friends. Editable installs hide this because they
+# resolve by path — it only breaks when someone builds a real wheel.
+[tool.setuptools.packages.find]
+include = ["daemon*", "agents*"]

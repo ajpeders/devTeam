@@ -1,0 +1,40 @@
+cluster:
+  node_id: "e2e-test"
+  seeds: []
+
+api:
+  address: "localhost:4223"
+  admin_api_key: "e2e-test-admin-key"
+
+projects:
+  - name: test-project
+    repo_url: "file:///tmp/test-repo.git"
+    agents:
+      - type: dev
+        count: 1
+        llm:
+          primary:
+            provider: ollama
+            model: qwen3:8b
+            endpoint: http://localhost:11434
+          timeout: 120s
+      - type: review
+        count: 1
+        llm:
+          primary:
+            provider: ollama
+            model: qwen3:8b
+            endpoint: http://localhost:11434
+          timeout: 120s
+
+git:
+  default_remote: "file:///tmp/test-repo.git"
+  workspace_dir: "/tmp/devteam-workspaces"
+
+docker:
+  registry: ""
+
+deploy:
+  method: "docker-compose"
+  targets: []
+  default_target: ""

@@ -1,0 +1,72 @@
+# devTeam config for containerized runs (root docker-compose.yml).
+#
+# Differences from local-test.yaml, all of which are required inside a container:
+#   - bind_address 0.0.0.0 so the published port reaches the daemon; `address`
+#     stays localhost because agent processes run inside THIS container.
+#   - LLM endpoints point at host.docker.internal (the host's ollama), not the
+#     container's own localhost. devTeam passes these through to litellm, so the
+#     OLLAMA_HOST env var does not apply here — this file is the source of truth.
+#   - admin_api_key is empty on purpose: the daemon fails closed at startup unless
+#     MYDEVTEAM_API_KEY is supplied via the environment. No secret in git.
+#   - workspace_dir lives under /data so it can be mounted as a named volume.
+
+cluster:
+  node_id: "docker"
+  seeds: []
+
+api:
+  address: "localhost:4223"
+  bind_address: "0.0.0.0:4223"
+  admin_api_key: ""
+
+agents:
+  - type: dev
+    count: 1
+    llm:
+      primary:
+        provider: ollama
+        model: qwen3:8b
+        endpoint: http://host.docker.internal:11434
+      timeout: 120s
+    max_memory_mb: 512
+  - type: review
+    count: 1
+    llm:
+      primary:
+        provider: ollama
+        model: qwen3:8b
+        endpoint: http://host.docker.internal:11434
+      timeout: 120s
+    max_memory_mb: 256
+  - type: qa
+    count: 1
+    llm:
+      primary:
+        provider: ollama
+        model: qwen2.5:7b-instruct
+        endpoint: http://host.docker.internal:11434
+      timeout: 120s
+  - type: deploy
+    count: 1
+    llm:
+      primary:
+        provider: ollama
+        model: qwen2.5:7b-instruct
+        endpoint: http://host.docker.internal:11434
+      timeout: 120s
+
+git:
+  # No default remote in the container image — set per deployment.
+  default_remote: ""
+  workspace_dir: "/data/workspaces"
+
+docker:
+  registry: ""
+
+deploy:
+  method: "docker-compose"
+  targets:
+    - name: "local"
+      host: "localhost"
+      compose_file: "docker-compose.yml"
+  default_target: "local"

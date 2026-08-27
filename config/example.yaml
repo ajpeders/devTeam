@@ -1,0 +1,45 @@
+# Legacy format — top-level agents are auto-wrapped into a "default" project.
+# For multi-project setups, see example-projects.yaml instead.
+
+cluster:
+  node_id: "server-a"
+  seeds: ["server-b:4222"]
+
+api:
+  address: "0.0.0.0:4223"  # Use "/tmp/devteam.sock" for Unix socket
+  admin_api_key: "CHANGE-ME-use-a-long-random-string"
+
+agents:
+  - type: dev
+    count: 2
+    llm:
+      primary:
+        provider: ollama
+        model: deepseek-coder-v3
+        endpoint: http://localhost:11434
+      fallback:
+        provider: anthropic
+        model: claude-sonnet-4-6
+      timeout: 120s
+  - type: qa
+    count: 1
+    llm:
+      primary:
+        provider: ollama
+        model: qwen2.5-coder
+        endpoint: http://localhost:11434
+git:
+  default_remote: "git@github.com:yourorg/yourrepo.git"
+  workspace_dir: "/var/devteam/workspaces"
+docker:
+  registry: "registry.yourdomain.com"
+deploy:
+  method: "docker-compose"
+  targets:
+    - name: "production"
+      host: "ssh://prod-server"
+      compose_file: "docker-compose.prod.yml"
+    - name: "staging"
+      host: "ssh://staging-server"
+      compose_file: "docker-compose.staging.yml"
+  default_target: "staging"
